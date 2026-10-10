@@ -18,48 +18,97 @@
 (function () {
   // ---- CONFIG: edit this block only ---------------------------------------
   var CONFIG = {
-    // Where the link goes when no ?u= is given. Must be on an allowed host.
-    defaultTarget: "https://www.youtube.com/@your-channel",
+    // Where the link goes when no ?u= is given. Any https URL.
+    defaultTarget: "https://example.com",
 
-    // Only these hosts may be used as a destination (blocks open-redirect abuse).
-    allowedHosts: ["youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be"],
-
-    // Android: package name of the app that should handle the link.
-    androidPackage: "com.google.android.youtube",
-
-    // iOS: URL scheme of the app. The page builds <scheme><host><path><query>.
-    iosScheme: "youtube://",
-
-    // Optional: rewrite a URL before use (short links, mobile hosts, ...).
-    // Receives a URL object, returns a URL object.
-    normalize: function (u) {
-      if (u.hostname === "youtu.be") {
-        var id = u.pathname.slice(1);
-        var rest = u.search ? "&" + u.search.slice(1) : "";
-        return new URL("https://www.youtube.com/watch?v=" + id + rest);
-      }
-      if (u.hostname === "m.youtube.com" || u.hostname === "youtube.com") {
-        u.hostname = "www.youtube.com";
-      }
-      return u;
-    },
+    // Which hosts ?u= may point to. The host of defaultTarget is always allowed.
+    //   []     -> only the defaultTarget host (safest, recommended)
+    //   [...]  -> those hosts as well, e.g. ["youtube.com", "youtu.be"]
+    //   ["*"]  -> ANY https host. Convenient, but anyone can then craft a link on
+    //             your domain that redirects anywhere. Only use if you accept that.
+    allowedHosts: [],
 
     // Seconds to wait on iOS before falling back to the web URL.
     iosFallbackMs: 1800
   };
+
+  // Known apps. For a host that matches, Android is sent to the app's package
+  // and iOS to its URL scheme. `ios(url)` returns a scheme URL, or null to use
+  // the https URL (universal link). Add your own entries as needed.
+  // Hosts not listed here still work: Android uses a package-less intent (breaks
+  // out of the in-app browser into the default handler) and iOS uses https.
+  var APPS = [
+    { hosts: ["youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be"],
+      android: "com.google.android.youtube",
+      normalize: function (u) {
+        if (u.hostname === "youtu.be") {
+          var rest = u.search ? "&" + u.search.slice(1) : "";
+          return new URL("https://www.youtube.com/watch?v=" + u.pathname.slice(1) + rest);
+        }
+        u.hostname = "www.youtube.com";
+        return u;
+      },
+      ios: function (u) { return "youtube://" + u.host + u.pathname + u.search; } },
+
+    { hosts: ["open.spotify.com"],
+      android: "com.spotify.music",
+      ios: function (u) { return "spotify:" + u.pathname.split("/").filter(Boolean).join(":"); } },
+
+    { hosts: ["instagram.com", "www.instagram.com"],
+      android: "com.instagram.android",
+      ios: function (u) {
+        var p = u.pathname.split("/").filter(Boolean);
+        return p.length === 1 ? "instagram://user?username=" + encodeURIComponent(p[0]) : null;
+      } },
+
+    { hosts: ["x.com", "twitter.com", "www.twitter.com"],
+      android: "com.twitter.android",
+      ios: function (u) {
+        var p = u.pathname.split("/").filter(Boolean);
+        return p.length === 1 ? "twitter://user?screen_name=" + encodeURIComponent(p[0]) : null;
+      } },
+
+    { hosts: ["wa.me"],
+      android: "com.whatsapp",
+      ios: function (u) { return "whatsapp://send?phone=" + encodeURIComponent(u.pathname.slice(1)); } },
+
+    { hosts: ["t.me"],
+      android: "org.telegram.messenger",
+      ios: function (u) { return "tg://resolve?domain=" + encodeURIComponent(u.pathname.slice(1)); } },
+
+    { hosts: ["tiktok.com", "www.tiktok.com"], android: "com.zhiliaoapp.musically", ios: function () { return null; } },
+    { hosts: ["linkedin.com", "www.linkedin.com"], android: "com.linkedin.android", ios: function () { return null; } },
+    { hosts: ["facebook.com", "www.facebook.com"], android: "com.facebook.katana", ios: function () { return null; } }
+  ];
   // -------------------------------------------------------------------------
 
-  function parse(raw) {
+  function appFor(host) {
+    for (var i = 0; i < APPS.length; i++) {
+      if (APPS[i].hosts.indexOf(host) !== -1) return APPS[i];
+    }
+    return null;
+  }
+
+  function parse(raw, defaultHost) {
     try {
       var u = new URL(raw);
-      if (u.protocol !== "https:" || CONFIG.allowedHosts.indexOf(u.hostname) === -1) return null;
-      return CONFIG.normalize(u);
+      if (u.protocol !== "https:") return null;
+      var any = CONFIG.allowedHosts.indexOf("*") !== -1;
+      var ok = any || u.hostname === defaultHost || CONFIG.allowedHosts.indexOf(u.hostname) !== -1;
+      return ok ? u : null;
     } catch (e) { return null; }
   }
 
+  var defaultUrl;
+  try { defaultUrl = new URL(CONFIG.defaultTarget); } catch (e) { defaultUrl = null; }
+  var msg = document.getElementById("msg");
+  if (!defaultUrl || defaultUrl.protocol !== "https:") { msg.textContent = "Invalid defaultTarget."; return; }
+
   var param = new URLSearchParams(location.search).get("u");
-  var target = parse(param) || parse(CONFIG.defaultTarget);
-  if (!target) { document.getElementById("msg").textContent = "Invalid link configuration."; return; }
+  var target = (param && parse(param, defaultUrl.hostname)) || defaultUrl;
+
+  var app = appFor(target.hostname);
+  if (app && app.normalize) target = app.normalize(target);
 
   var web = target.href;
   var rest = target.host + target.pathname + target.search;
@@ -67,20 +116,19 @@
   var isAndroid = /Android/i.test(ua);
   var isIOS = /iPhone|iPad|iPod/i.test(ua);
 
-  var appUrl;
+  var appUrl = web;
   if (isAndroid) {
-    appUrl = "intent://" + rest + "#Intent;scheme=https;package=" + CONFIG.androidPackage +
-             ";S.browser_fallback_url=" + encodeURIComponent(web) + ";end";
-  } else if (isIOS) {
-    appUrl = CONFIG.iosScheme + rest;
-  } else {
-    appUrl = web;
+    appUrl = "intent://" + rest + "#Intent;scheme=https;" +
+             (app ? "package=" + app.android + ";" : "") +
+             "S.browser_fallback_url=" + encodeURIComponent(web) + ";end";
+  } else if (isIOS && app) {
+    appUrl = app.ios(target) || web;
   }
 
   document.getElementById("open").href = appUrl;
   location.href = appUrl;
 
-  if (isIOS) {
+  if (isIOS && appUrl !== web) {
     // If the app scheme did nothing (app missing, blocked), fall back to the web URL.
     setTimeout(function () {
       if (!document.hidden) location.href = web;
