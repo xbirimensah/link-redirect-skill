@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Open in app</title>
+<style>
+  body{margin:0;min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;font-family:system-ui,-apple-system,"Segoe UI",sans-serif;background:#fff;color:#111}
+  a.btn{padding:14px 28px;border-radius:12px;background:#111;color:#fff;text-decoration:none;font-weight:600}
+  p{margin:0;color:#666;font-size:14px}
+</style>
+</head>
+<body>
+<p id="msg">Opening the app ...</p>
+<a class="btn" id="open" href="#">Open in app</a>
+<script>
+(function () {
+  // ---- CONFIG: edit this block only ---------------------------------------
+  var CONFIG = {
+    // Where the link goes when no ?u= is given. Must be on an allowed host.
+    defaultTarget: "https://www.youtube.com/@your-channel",
+
+    // Only these hosts may be used as a destination (blocks open-redirect abuse).
+    allowedHosts: ["youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be"],
+
+    // Android: package name of the app that should handle the link.
+    androidPackage: "com.google.android.youtube",
+
+    // iOS: URL scheme of the app. The page builds <scheme><host><path><query>.
+    iosScheme: "youtube://",
+
+    // Optional: rewrite a URL before use (short links, mobile hosts, ...).
+    // Receives a URL object, returns a URL object.
+    normalize: function (u) {
+      if (u.hostname === "youtu.be") {
+        var id = u.pathname.slice(1);
+        var rest = u.search ? "&" + u.search.slice(1) : "";
+        return new URL("https://www.youtube.com/watch?v=" + id + rest);
+      }
+      if (u.hostname === "m.youtube.com" || u.hostname === "youtube.com") {
+        u.hostname = "www.youtube.com";
+      }
+      return u;
+    },
+
+    // Seconds to wait on iOS before falling back to the web URL.
+    iosFallbackMs: 1800
+  };
+  // -------------------------------------------------------------------------
+
+  function parse(raw) {
+    try {
+      var u = new URL(raw);
+      if (u.protocol !== "https:" || CONFIG.allowedHosts.indexOf(u.hostname) === -1) return null;
+      return CONFIG.normalize(u);
+    } catch (e) { return null; }
+  }
+
+  var param = new URLSearchParams(location.search).get("u");
+  var target = parse(param) || parse(CONFIG.defaultTarget);
+  if (!target) { document.getElementById("msg").textContent = "Invalid link configuration."; return; }
+
+  var web = target.href;
+  var rest = target.host + target.pathname + target.search;
+  var ua = navigator.userAgent || "";
+  var isAndroid = /Android/i.test(ua);
+  var isIOS = /iPhone|iPad|iPod/i.test(ua);
+
+  var appUrl;
+  if (isAndroid) {
+    appUrl = "intent://" + rest + "#Intent;scheme=https;package=" + CONFIG.androidPackage +
+             ";S.browser_fallback_url=" + encodeURIComponent(web) + ";end";
+  } else if (isIOS) {
+    appUrl = CONFIG.iosScheme + rest;
+  } else {
+    appUrl = web;
+  }
+
+  document.getElementById("open").href = appUrl;
+  location.href = appUrl;
+
+  if (isIOS) {
+    // If the app scheme did nothing (app missing, blocked), fall back to the web URL.
+    setTimeout(function () {
+      if (!document.hidden) location.href = web;
+    }, CONFIG.iosFallbackMs);
+  }
+})();
+</script>
+</body>
+</html>
